@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: devops-app
-          image: IMAGE_PLACEHOLDER
+          image: 611635362693.dkr.ecr.us-east-1.amazonaws.com/projeto-devops-infra-app:v1.1
           ports:
             - containerPort: 8080
           readinessProbe:

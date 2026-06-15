@@ -1,4 +1,4 @@
-name: Build and Deploy to EKS
+name: Build and Update GitOps
 
 on:
   workflow_dispatch:
@@ -10,7 +10,6 @@ on:
         type: choice
         options:
           - deploy
-          - destroy
 
 permissions:
   id-token: write
@@ -18,17 +17,16 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  EKS_CLUSTER_NAME: projeto-devops-infra
   ECR_REPOSITORY: projeto-devops-infra-app
-  DEPLOYMENT_NAME: devops-app
-  NAMESPACE: default
+  GITOPS_REPO: lucielly/projeto-devops-gitops
+  GITOPS_PATH: apps/devops-app/deployment.yaml
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout app repository
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials
@@ -38,13 +36,11 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        if: ${{ github.event.inputs.action == 'deploy' }}
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and Push Docker image
-        if: ${{ github.event.inputs.action == 'deploy' }}
         run: |
-          IMAGE_TAG=${GITHUB_SHA::7}
+          IMAGE_TAG=v1.${{ github.run_number }}
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ECR_REGISTRY=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com
           IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
@@ -54,24 +50,22 @@ jobs:
 
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
-      - name: Update kubeconfig
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Update image tag in GitOps repo
         run: |
-          aws eks update-kubeconfig \
-            --region $AWS_REGION \
-            --name $EKS_CLUSTER_NAME
+          sed -i "s|image: .*|image: $IMAGE_URI|g" gitops/$GITOPS_PATH
 
-      - name: Deploy to EKS
-        if: ${{ github.event.inputs.action == 'deploy' }}
-        run: |
-          sed -i "s|IMAGE_PLACEHOLDER|$IMAGE_URI|g" k8s/deployment.yaml
+          cd gitops
 
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
 
-          kubectl rollout status deployment/$DEPLOYMENT_NAME -n $NAMESPACE
-
-      - name: Destroy application from EKS
-        if: ${{ github.event.inputs.action == 'destroy' }}
-        run: |
-          kubectl delete -f k8s/service.yaml --ignore-not-found=true
-          kubectl delete -f k8s/deployment.yaml --ignore-not-found=true
+          git add $GITOPS_PATH
+          git commit -m "chore: update devops-app image to $IMAGE_URI" || echo "No changes to commit"
+          git push
